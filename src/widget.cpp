@@ -51,11 +51,23 @@ Widget::Widget(QWidget* parent) : QWidget(parent), ui(new Ui::Widget) {
     // 本来为了去除图标选中变色样式，可以对Icon手动addPixmap(..., QIcon::Selected) or (& ~Qt::ItemIsSelectable)
     // 但是采用delegate后，就没必要了
     // will not take ownership of delegate
-    lw->setItemDelegate(new IconOnlyDelegate(lw));
+    itemDelegate = new IconOnlyDelegate(lw);
+    lw->setItemDelegate(itemDelegate);
     lw->installEventFilter(this);
 
     connect(lw, &QListWidget::currentItemChanged, this, [this](QListWidgetItem* cur, QListWidgetItem*) {
-        if (cur) showLabelForItem(cur);
+        if (!cur) return;
+        if (isGroupSwitcherMode) {
+            // 组内切换模式：显示具体窗口标题
+            int row = lw->row(cur);
+            if (row >= 0 && row < groupWindowOrder.size()) {
+                auto title = Util::getWindowTitle(groupWindowOrder[row]);
+                if (title.isEmpty()) title = QString("窗口 %1").arg(row + 1);
+                showLabelForItem(cur, title);
+            }
+        } else {
+            showLabelForItem(cur);
+        }
     });
 
     connect(qApp, &QApplication::focusWindowChanged, this, [this](QWindow* focusWindow) {
@@ -89,21 +101,37 @@ void Widget::keyPressEvent(QKeyEvent* event) {
         auto index = (i - (2 * isShiftPressed - 1) + lw->count()) % lw->count();
         lw->setCurrentRow(index);
     } else if (key == Qt::Key_QuoteLeft && (modifiers & Qt::AltModifier)) { // Alt + `, 在前台窗口同组窗口内切换
-        if (this->isVisible() && !this->isMinimized()) {
-            // isVisible() == true if minimized
-            // 不使用`isForeground()`，即使`bringWindowToTop`(without active)，少数窗口也可能抢夺焦点，如`CAJViewer`
+        // 如果当前显示的是 Alt+Tab 列表（非组内切换模式），则直接隐藏
+        if (this->isVisible() && !this->isMinimized() && !isGroupSwitcherMode) {
             hide();
             return;
         }
+
         auto foreWin = GetForegroundWindow();
+        bool shiftPressed = modifiers & Qt::ShiftModifier;
+
+        // 首次按下：构建同组窗口列表，并定位当前窗口在列表中的索引
         if (groupWindowOrder.isEmpty()) {
             auto targetExe = Util::getWindowProcessPath(foreWin);
             groupWindowOrder = buildGroupWindowOrder(targetExe);
+            groupCurrentIndex = 0;
+            for (int i = 0; i < groupWindowOrder.size(); i++) {
+                if (groupWindowOrder[i] == foreWin) {
+                    groupCurrentIndex = i;
+                    break;
+                }
+            }
         }
-        if (auto nextWin = rotateWindowInGroup(groupWindowOrder, foreWin, !(modifiers & Qt::ShiftModifier))) {
-            Util::switchToWindow(nextWin, true);
-            qInfo() << "(Alt+`)Switch to" << Util::getWindowTitle(nextWin) << Util::getClassName(nextWin);
-        }
+
+        if (groupWindowOrder.size() <= 1) return; // 该应用只有一个窗口，无需切换
+
+        // 向前或向后轮换选中索引
+        int N = groupWindowOrder.size();
+        groupCurrentIndex = shiftPressed ? (groupCurrentIndex - 1 + N) % N
+                                         : (groupCurrentIndex + 1) % N;
+
+        // 显示浮窗，松开 Alt 后再执行切换
+        showGroupSwitcherOverlay();
     } else if (key == Qt::Key_Up || key == Qt::Key_Down) {
         if (auto item = lw->currentItem()) {
             auto center = lw->visualItemRect(item).center();
@@ -179,27 +207,46 @@ void Widget::setupLabelFont() {
 
 void Widget::keyReleaseEvent(QKeyEvent* event) {
     if (event->key() == Qt::Key_Alt) {
-        groupWindowOrder.clear(); // for Alt + `
         if (this->isVisible()) {
-            // active selected window
-            if (auto item = lw->currentItem()) {
-                if (auto group = item->data(Qt::UserRole).value<WindowGroup>(); !group.windows.empty()) {
-                    WindowInfo targetWin = group.windows.at(0); // TODO 需要排序（lastActiveWindow 被关闭情况下）
-                    const auto lastActive = getLastActiveGroupWindow(group.exePath).first;
-                    for (auto& info: group.windows) {
-                        if (info.hwnd == lastActive) {
-                            targetWin = info;
-                            break;
-                        }
+            if (isGroupSwitcherMode) {
+                // Alt+` 组内切换模式：直接切换到当前选中行对应的窗口
+                int row = lw->currentRow();
+                if (row >= 0 && row < groupWindowOrder.size()) {
+                    HWND hwnd = groupWindowOrder[row];
+                    if (hwnd) {
+                        Util::switchToWindow(hwnd);
+                        qInfo() << "(Alt+`)Switch to" << Util::getWindowTitle(hwnd);
                     }
-                    if (targetWin.hwnd) {
-                        Util::switchToWindow(targetWin.hwnd);
-                        qInfo() << "Switch to" << targetWin << group.exePath;
+                }
+            } else {
+                // Alt+Tab 模式：原有逻辑，切换到该应用组最后活跃的窗口
+                if (auto item = lw->currentItem()) {
+                    if (auto group = item->data(Qt::UserRole).value<WindowGroup>(); !group.windows.empty()) {
+                        WindowInfo targetWin = group.windows.at(0); // TODO 需要排序（lastActiveWindow 被关闭情况下）
+                        const auto lastActive = getLastActiveGroupWindow(group.exePath).first;
+                        for (auto& info: group.windows) {
+                            if (info.hwnd == lastActive) {
+                                targetWin = info;
+                                break;
+                            }
+                        }
+                        if (targetWin.hwnd) {
+                            Util::switchToWindow(targetWin.hwnd);
+                            qInfo() << "Switch to" << targetWin << group.exePath;
+                        }
                     }
                 }
             }
             hide(); //! must hide after active target window, or focus may fallback to prev foreground window (like 网易云音乐)
         }
+        // 无论浮窗是否可见，都清理状态并恢复普通模式
+        groupWindowOrder.clear();
+        groupCurrentIndex = 0;
+        isGroupSwitcherMode = false;
+        // 恢复 Alt+Tab 模式的格子尺寸和委托模式
+        itemDelegate->setGroupSwitcherMode(false);
+        lw->setGridSize({80, 80});
+        lw->setFixedHeight(80);
     }
     QWidget::keyReleaseEvent(event);
 }
@@ -346,6 +393,74 @@ bool Widget::prepareListWidget() {
     }
 
     return true;
+}
+
+/// 显示 Alt+` 组内切换浮窗，列出同应用的所有窗口
+/// 每格：上方"窗口 N"，中间图标，下方窗口标题
+void Widget::showGroupSwitcherOverlay() {
+    isGroupSwitcherMode = true;
+
+    // 仅在首次显示或窗口数量变化时重建列表
+    if (!this->isVisible() || lw->count() != groupWindowOrder.size()) {
+        lw->clear();
+        if (groupWindowOrder.isEmpty()) return;
+
+        // 启用组切换模式：图标格高度增加以容纳上下文字
+        // 布局：18px"窗口 N" + 64px 图标 + 16px 标题 + 12px 边距 = 110px
+        constexpr int GroupGridH = 110;
+        itemDelegate->setGroupSwitcherMode(true);
+        lw->setGridSize({80, GroupGridH});
+        lw->setFixedHeight(GroupGridH);
+
+        auto firstHwnd = groupWindowOrder.first();
+        auto appPath = Util::getWindowProcessPath(firstHwnd);
+        auto appIcon = Util::getCachedIcon(appPath, firstHwnd);
+
+        for (int i = 0; i < groupWindowOrder.size(); i++) {
+            HWND hwnd = groupWindowOrder[i];
+            auto title = Util::getWindowTitle(hwnd);
+            // 无标题时留空（delegate 不绘制空字符串）
+
+            // 每个 item 对应一个窗口，WindowGroup 仅含单个 WindowInfo
+            WindowGroup singleGroup;
+            singleGroup.exePath = appPath;
+            singleGroup.icon = appIcon;
+            singleGroup.addWindow({title, Util::getClassName(hwnd), hwnd});
+
+            auto* item = new QListWidgetItem(appIcon, {});
+            item->setData(Qt::UserRole, QVariant::fromValue(singleGroup));
+            item->setSizeHint(lw->gridSize());
+            lw->addItem(item);
+        }
+
+        // 计算并设置几何尺寸（与 prepareListWidget 逻辑保持一致）
+        if (auto firstItem = lw->item(0)) {
+            auto firstRect = lw->visualItemRect(firstItem);
+            auto width = lw->gridSize().width() * lw->count() + (firstRect.x() - lw->frameWidth());
+            lw->setFixedWidth(width);
+
+            bool displayOnPrimary = (cfg.getDisplayMonitor() == PrimaryMonitor);
+            auto screen = displayOnPrimary ?
+                          QGuiApplication::primaryScreen() :
+                          QGuiApplication::screenAt(QCursor::pos());
+            if (!screen && !displayOnPrimary)
+                screen = QGuiApplication::primaryScreen();
+            if (!screen) return;
+
+            auto lwRect = lw->rect();
+            auto thisRect = lwRect.marginsAdded(ListWidgetMargin);
+            thisRect.moveCenter(screen->geometry().center());
+            this->setGeometry(thisRect);
+
+            lwRect.moveCenter(this->rect().center());
+            lw->move(lwRect.topLeft());
+        }
+
+        forceShow();
+    }
+
+    // 更新高亮行（触发 currentItemChanged 信号以刷新底部标签文字）
+    lw->setCurrentRow(groupCurrentIndex);
 }
 
 bool Widget::requestShow() { // TODO 当前台是开始菜单（Win）时，会导致显示 但无法操控

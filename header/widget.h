@@ -6,6 +6,8 @@
 #include <QListWidget>
 #include <QDebug>
 
+class IconOnlyDelegate; // 前向声明，避免 IconOnlyDelegate.cpp 与 widget.h 循环包含
+
 struct WindowGroup;
 
 struct WindowInfo {
@@ -79,6 +81,7 @@ private:
     bool forceShow();
     void showLabelForItem(QListWidgetItem* item, QString text = QString());
     void setupLabelFont();
+    void showGroupSwitcherOverlay(); // Alt+` 组内切换浮窗
     auto getLastActiveGroupWindow(const QString& exePath) -> QPair<HWND, QDateTime>;
     auto getLastValidActiveGroupWindow(const WindowGroup& group) -> QPair<HWND, QDateTime>;
     void sortGroupWindows(QList<HWND>& windows, const QString& exePath);
@@ -89,10 +92,13 @@ private:
 private:
     Ui::Widget* ui;
     QListWidget* lw = nullptr;
+    IconOnlyDelegate* itemDelegate = nullptr; // 存储指针以便动态切换模式
     const QMargins ListWidgetMargin{24, 24, 24, 24};
     /// exePath -> (HWND, time)
     QHash<QString, QHash<HWND, QDateTime>> winActiveOrder;
-    QList<HWND> groupWindowOrder; // for Alt+` 同组窗口切换
+    QList<HWND> groupWindowOrder;  // for Alt+` 同组窗口切换
+    int groupCurrentIndex = 0;     // Alt+` 当前选中窗口索引
+    bool isGroupSwitcherMode = false; // true 表示当前浮窗是 Alt+` 组内切换模式
 };
 
 
