@@ -37,6 +37,12 @@ struct WindowGroup {
 
 Q_DECLARE_METATYPE(WindowGroup) // for QVariant
 
+enum WidgetItemRole {
+    WindowGroupRole = Qt::UserRole,
+    GroupWindowHandleRole,
+    GroupWindowLabelRole,
+};
+
 QT_BEGIN_NAMESPACE
 
 namespace Ui {
@@ -81,6 +87,9 @@ private:
     bool forceShow();
     void showLabelForItem(QListWidgetItem* item, QString text = QString());
     void setupLabelFont();
+    void restoreDefaultListWidgetLayout();
+    void syncGroupWindowLabels(const QString& exePath);
+    QString groupWindowLabel(const QString& exePath, HWND hwnd) const;
     void showGroupSwitcherOverlay(); // Alt+` 组内切换浮窗
     auto getLastActiveGroupWindow(const QString& exePath) -> QPair<HWND, QDateTime>;
     auto getLastValidActiveGroupWindow(const WindowGroup& group) -> QPair<HWND, QDateTime>;
@@ -96,6 +105,8 @@ private:
     const QMargins ListWidgetMargin{24, 24, 24, 24};
     /// exePath -> (HWND, time)
     QHash<QString, QHash<HWND, QDateTime>> winActiveOrder;
+    QHash<QString, QHash<HWND, int>> groupWindowLabels; // exePath -> (HWND, stable index)
+    QHash<QString, int> groupWindowNextLabel; // exePath -> next stable index
     QList<HWND> groupWindowOrder;  // for Alt+` 同组窗口切换
     int groupCurrentIndex = 0;     // Alt+` 当前选中窗口索引
     bool isGroupSwitcherMode = false; // true 表示当前浮窗是 Alt+` 组内切换模式

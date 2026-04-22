@@ -94,10 +94,10 @@ target_link_libraries(${PROJECT_NAME}
 # 必须放在find_package之后，否则`Qt6Gui_PRIVATE_INCLUDE_DIRS`变量未定义
 # target_include_directories(${PROJECT_NAME} PRIVATE ${Qt6Gui_PRIVATE_INCLUDE_DIRS} ${Qt6Core_PRIVATE_INCLUDE_DIRS})
 
-set_target_properties(${PROJECT_NAME} PROPERTIES OUTPUT_NAME "AltTaber") # 设置输出文件名
-if (CMAKE_BUILD_TYPE MATCHES "Release")
-    set_target_properties(${PROJECT_NAME} PROPERTIES WIN32_EXECUTABLE true) # 设置为窗口应用程序, 无控制台，同时会导致Clion无法捕获输出
-endif ()
+set_target_properties(${PROJECT_NAME} PROPERTIES
+        OUTPUT_NAME "AltTaber" # 设置输出文件名
+        WIN32_EXECUTABLE $<CONFIG:Release> # Visual Studio 等多配置生成器下也能正确区分 Release / Debug
+)
 
 target_compile_definitions(${PROJECT_NAME} PRIVATE
         QT_DEPRECATED_WARNINGS
@@ -107,4 +107,33 @@ target_compile_definitions(${PROJECT_NAME} PRIVATE
 
 if (MSVC)
     target_compile_options(${PROJECT_NAME} PRIVATE "/utf-8")
+endif ()
+
+option(ALTTABER_AUTO_DEPLOY_QT "Automatically run windeployqt after building on Windows" ON)
+
+if (WIN32 AND ALTTABER_AUTO_DEPLOY_QT)
+    get_target_property(QT_QMAKE_EXECUTABLE Qt6::qmake IMPORTED_LOCATION)
+    if (QT_QMAKE_EXECUTABLE)
+        get_filename_component(QT_BIN_DIR "${QT_QMAKE_EXECUTABLE}" DIRECTORY)
+    endif ()
+
+    find_program(WINDEPLOYQT_EXECUTABLE
+            NAMES windeployqt windeployqt.exe
+            HINTS "${QT_BIN_DIR}"
+    )
+
+    if (WINDEPLOYQT_EXECUTABLE)
+        add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+                COMMAND "${WINDEPLOYQT_EXECUTABLE}"
+                "$<IF:$<CONFIG:Debug>,--debug,--release>"
+                --dir "$<TARGET_FILE_DIR:${PROJECT_NAME}>"
+                --no-translations
+                --verbose 0
+                "$<TARGET_FILE:${PROJECT_NAME}>"
+                COMMENT "Deploying Qt runtime for $<TARGET_FILE_NAME:${PROJECT_NAME}>"
+                VERBATIM
+        )
+    else ()
+        message(WARNING "ALTTABER_AUTO_DEPLOY_QT is ON, but windeployqt was not found. Qt DLLs will need to be deployed manually.")
+    endif ()
 endif ()
