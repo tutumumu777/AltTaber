@@ -5,7 +5,7 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
-set(CMAKE_PREFIX_PATH "D:/Qt/6.8.1/msvc2022_64/lib/cmake")
+set(CMAKE_PREFIX_PATH "C:/Qt/6.11.0/msvc2022_64/lib/cmake")
 list(APPEND CMAKE_AUTOUIC_SEARCH_PATHS ui) # 如果.ui文件不在.cpp同一目录下，需要添加搜索路径
 
 # 设置版本信息变量
@@ -36,6 +36,8 @@ find_package(Qt6 COMPONENTS
         Widgets
         Xml
         Network
+        CorePrivate
+        GuiPrivate
         REQUIRED)
 
 add_executable(Win_Switcher src/main.cpp
@@ -79,15 +81,18 @@ target_link_libraries(Win_Switcher
         Qt::Widgets
         Qt::Xml
         Qt::Network
+        Qt6::CorePrivate
+        Qt6::GuiPrivate 
 )
 
 target_link_libraries(${PROJECT_NAME}
         Dwmapi
+        runtimeobject
 )
 
 # 启用`gui_private`模块
 # 必须放在find_package之后，否则`Qt6Gui_PRIVATE_INCLUDE_DIRS`变量未定义
-target_include_directories(${PROJECT_NAME} PRIVATE ${Qt6Gui_PRIVATE_INCLUDE_DIRS})
+# target_include_directories(${PROJECT_NAME} PRIVATE ${Qt6Gui_PRIVATE_INCLUDE_DIRS} ${Qt6Core_PRIVATE_INCLUDE_DIRS})
 
 set_target_properties(${PROJECT_NAME} PROPERTIES OUTPUT_NAME "AltTaber") # 设置输出文件名
 if (CMAKE_BUILD_TYPE MATCHES "Release")
