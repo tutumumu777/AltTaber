@@ -17,18 +17,21 @@ void IconOnlyDelegate::paint(QPainter* painter, const QStyleOptionViewItem& opti
 
     if (m_groupSwitcherMode) {
         // ── 组内切换模式 ──────────────────────────────────────
-        // 布局：[上 18px "窗口 N"] [中 图标] [下 16px 窗口标题]
-        constexpr int topH = 18;
-        constexpr int botH = 16;
+        // 布局：[上 20px "窗口 N"] [中 图标] [下 18px 窗口标题]
+        constexpr int topH = 20;
+        constexpr int botH = 18;
+        constexpr int textMargin = 6;
         const int iconAreaH = option.rect.height() - topH - botH;
 
         // 上方：显示"窗口 N"
-        QFont numFont("Microsoft YaHei");
-        numFont.setPointSizeF(8.0);
+        QFont numFont("Microsoft YaHei UI");
+        numFont.setPointSizeF(8.5);
+        numFont.setBold(true);
         painter->setFont(numFont);
-        painter->setPen(QColor(180, 180, 180, 220));
-        QRect topRect(option.rect.left(), option.rect.top(), option.rect.width(), topH);
-        painter->drawText(topRect, Qt::AlignCenter, QString("窗口 %1").arg(index.row() + 1));
+        painter->setPen(Qt::white);
+        QRect topRect(option.rect.left() + textMargin, option.rect.top(),
+                      option.rect.width() - 2 * textMargin, topH);
+        painter->drawText(topRect, Qt::AlignCenter, index.data(GroupWindowLabelRole).toString());
 
         // 中间：图标
         auto icon = qvariant_cast<QIcon>(index.data(Qt::DecorationRole));
@@ -41,15 +44,15 @@ void IconOnlyDelegate::paint(QPainter* painter, const QStyleOptionViewItem& opti
         }
 
         // 下方：窗口标题（无标题则不显示）
-        auto group = qvariant_cast<WindowGroup>(index.data(Qt::UserRole));
+        auto group = qvariant_cast<WindowGroup>(index.data(WindowGroupRole));
         auto title = group.windows.isEmpty() ? QString() : group.windows.first().title;
         if (!title.isEmpty()) {
-            QFont titleFont("Microsoft YaHei");
-            titleFont.setPointSizeF(7.5);
+            QFont titleFont("Microsoft YaHei UI");
+            titleFont.setPointSizeF(8.0);
             painter->setFont(titleFont);
-            painter->setPen(QColor(200, 200, 200, 160));
-            QRect botRect(option.rect.left() + 2, option.rect.bottom() - botH,
-                          option.rect.width() - 4, botH);
+            painter->setPen(Qt::white);
+            QRect botRect(option.rect.left() + textMargin, option.rect.top() + option.rect.height() - botH,
+                          option.rect.width() - 2 * textMargin, botH);
             QFontMetrics fm(titleFont);
             auto elidedText = fm.elidedText(title, Qt::ElideRight, botRect.width());
             painter->drawText(botRect, Qt::AlignCenter, elidedText);
@@ -67,7 +70,7 @@ void IconOnlyDelegate::paint(QPainter* painter, const QStyleOptionViewItem& opti
     }
 
     // draw badge
-    auto num = qvariant_cast<WindowGroup>(index.data(Qt::UserRole)).windows.size();
+    auto num = qvariant_cast<WindowGroup>(index.data(WindowGroupRole)).windows.size();
     if (num > 1) {
         auto text = QString::number(num);
         const auto extraWidth = 8 * (text.size() - 1);
