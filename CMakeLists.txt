@@ -112,6 +112,14 @@ endif ()
 option(ALTTABER_AUTO_DEPLOY_QT "Automatically run windeployqt after building on Windows" ON)
 
 if (WIN32 AND ALTTABER_AUTO_DEPLOY_QT)
+    add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            $<TARGET_RUNTIME_DLLS:${PROJECT_NAME}>
+            $<TARGET_FILE_DIR:${PROJECT_NAME}>
+            COMMAND_EXPAND_LISTS
+            COMMENT "Copying runtime DLLs for $<TARGET_FILE_NAME:${PROJECT_NAME}>"
+    )
+
     get_target_property(QT_QMAKE_EXECUTABLE Qt6::qmake IMPORTED_LOCATION)
     if (QT_QMAKE_EXECUTABLE)
         get_filename_component(QT_BIN_DIR "${QT_QMAKE_EXECUTABLE}" DIRECTORY)
@@ -126,6 +134,7 @@ if (WIN32 AND ALTTABER_AUTO_DEPLOY_QT)
         add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
                 COMMAND "${WINDEPLOYQT_EXECUTABLE}"
                 "$<IF:$<CONFIG:Debug>,--debug,--release>"
+                --no-compiler-runtime
                 --dir "$<TARGET_FILE_DIR:${PROJECT_NAME}>"
                 --no-translations
                 --verbose 0
