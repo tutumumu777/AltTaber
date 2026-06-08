@@ -1,44 +1,49 @@
 ﻿#include "utils/IconOnlyDelegate.h"
 #include "widget.h"
+#include <QFontMetrics>
 
 void IconOnlyDelegate::paint(QPainter* painter, const QStyleOptionViewItem& option, const QModelIndex& index) const {
     painter->setRenderHint(QPainter::Antialiasing);
     painter->setPen(Qt::NoPen); //取消边框
-    // option.rect.size() == QListWidgetItem::sizeHint()
+
+    // 选中 / 悬停背景
     if (option.state & QStyle::State_Selected) {
-        painter->setBrush(selectedColor);
-        painter->drawRoundedRect(option.rect, radius, radius);
+        painter->setBrush(m_style.selectedColor);
+        painter->drawRoundedRect(option.rect, m_style.borderRadius, m_style.borderRadius);
     } else if (option.state & QStyle::State_MouseOver) {
-        painter->setBrush(hoverColor);
-        painter->drawRoundedRect(option.rect, radius, radius);
+        painter->setBrush(m_style.hoverColor);
+        painter->drawRoundedRect(option.rect, m_style.borderRadius, m_style.borderRadius);
     }
 
-    // 居中绘制图标
+    // 图标：按 iconPadding 定位（支持非对称 padding）
     auto icon = qvariant_cast<QIcon>(index.data(Qt::DecorationRole));
     if (!icon.isNull()) {
-        QRect iconRect{{}, option.decorationSize}; // QListWidget::iconSize()
-        iconRect.moveCenter(option.rect.center());
+        const QRect iconRect(
+            option.rect.left() + m_style.iconPadding.left(),
+            option.rect.top() + m_style.iconPadding.top(),
+            m_style.iconSize,
+            m_style.iconSize
+        );
         icon.paint(painter, iconRect);
     }
 
-    // draw badge
-    auto num = qvariant_cast<WindowGroup>(index.data(Qt::UserRole)).windows.size();
+    // Badge: 当应用有多个窗口时，右上角显示窗口数
+    auto num = qvariant_cast<WindowGroup>(index.data(WindowGroupRole)).windows.size();
     if (num > 1) {
-        auto text = QString::number(num);
+        const auto text = QString::number(num);
         const auto extraWidth = 8 * (text.size() - 1);
         constexpr auto R = 12;
-        auto badgeCenter = option.rect.topRight() + QPoint(-(R + 3), R + 3);
-        // extra Width for extra number
-        auto badgeRect = QRect(badgeCenter + QPoint(-R - extraWidth, -R), QSize(2 * R + extraWidth, 2 * R));
-        painter->setPen(QColor(200, 200, 200, 50));
-        painter->setBrush(QColor(133, 114, 97)); // learn from iOS
+        const auto badgeCenter = option.rect.topRight() + QPoint(-(R + 3), R + 3);
+        const auto badgeRect = QRect(badgeCenter + QPoint(-R - extraWidth, -R), QSize(2 * R + extraWidth, 2 * R));
+        painter->setPen(m_style.badgeBorder);
+        painter->setBrush(m_style.badgeBg);
         painter->drawRoundedRect(badgeRect, R, R);
 
         QFont font{"Microsoft YaHei"};
-        font.setPointSizeF(12.8);
+        font.setPointSizeF(m_style.badgeFontSize);
         font.setBold(true);
         painter->setFont(font);
-        painter->setPen(QColor(214, 192, 171));
+        painter->setPen(m_style.badgeText);
         painter->drawText(badgeRect, Qt::AlignCenter, text);
     }
 }

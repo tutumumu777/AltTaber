@@ -5,7 +5,7 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
-set(CMAKE_PREFIX_PATH "D:/Qt/6.8.1/msvc2022_64/lib/cmake")
+set(CMAKE_PREFIX_PATH "C:/Qt/6.11.0/msvc2022_64/lib/cmake")
 list(APPEND CMAKE_AUTOUIC_SEARCH_PATHS ui) # 如果.ui文件不在.cpp同一目录下，需要添加搜索路径
 
 # 设置版本信息变量
@@ -36,6 +36,8 @@ find_package(Qt6 COMPONENTS
         Widgets
         Xml
         Network
+        CorePrivate
+        GuiPrivate
         REQUIRED)
 
 add_executable(Win_Switcher src/main.cpp
@@ -72,27 +74,32 @@ add_executable(Win_Switcher src/main.cpp
         header/UpdateDialog.h
         ui/UpdateDialog.ui
         src/utils/ScheduledTask.cpp
-        header/utils/ScheduledTask.h)
+        header/utils/ScheduledTask.h
+        src/GroupSwitcherWidget.cpp
+        header/GroupSwitcherWidget.h)
 target_link_libraries(Win_Switcher
         Qt::Core
         Qt::Gui
         Qt::Widgets
         Qt::Xml
         Qt::Network
+        Qt6::CorePrivate
+        Qt6::GuiPrivate 
 )
 
 target_link_libraries(${PROJECT_NAME}
         Dwmapi
+        runtimeobject
 )
 
 # 启用`gui_private`模块
 # 必须放在find_package之后，否则`Qt6Gui_PRIVATE_INCLUDE_DIRS`变量未定义
-target_include_directories(${PROJECT_NAME} PRIVATE ${Qt6Gui_PRIVATE_INCLUDE_DIRS})
+# target_include_directories(${PROJECT_NAME} PRIVATE ${Qt6Gui_PRIVATE_INCLUDE_DIRS} ${Qt6Core_PRIVATE_INCLUDE_DIRS})
 
-set_target_properties(${PROJECT_NAME} PROPERTIES OUTPUT_NAME "AltTaber") # 设置输出文件名
-if (CMAKE_BUILD_TYPE MATCHES "Release")
-    set_target_properties(${PROJECT_NAME} PROPERTIES WIN32_EXECUTABLE true) # 设置为窗口应用程序, 无控制台，同时会导致Clion无法捕获输出
-endif ()
+set_target_properties(${PROJECT_NAME} PROPERTIES
+        OUTPUT_NAME "AltTaber" # 设置输出文件名
+        WIN32_EXECUTABLE $<CONFIG:Release> # Visual Studio 等多配置生成器下也能正确区分 Release / Debug
+)
 
 target_compile_definitions(${PROJECT_NAME} PRIVATE
         QT_DEPRECATED_WARNINGS
@@ -102,4 +109,57 @@ target_compile_definitions(${PROJECT_NAME} PRIVATE
 
 if (MSVC)
     target_compile_options(${PROJECT_NAME} PRIVATE "/utf-8")
+endif ()
+
+# 构建后将 README.md 及其引用的 img/ 资源复制到产物目录，
+# 使发布包中的 README 能离线渲染图片（与仓库内相对路径保持一致，GitHub 页面也能正常显示）
+add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_CURRENT_SOURCE_DIR}/README.md"
+        "$<TARGET_FILE_DIR:${PROJECT_NAME}>/README.md"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different
+        "${CMAKE_CURRENT_SOURCE_DIR}/img"
+        "$<TARGET_FILE_DIR:${PROJECT_NAME}>/img"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different
+        "${CMAKE_CURRENT_SOURCE_DIR}/doc"
+        "$<TARGET_FILE_DIR:${PROJECT_NAME}>/doc"
+        COMMENT "Copying README.md, img/ and doc/ to $<TARGET_FILE_DIR:${PROJECT_NAME}>"
+)
+
+option(ALTTABER_AUTO_DEPLOY_QT "Automatically run windeployqt after building on Windows" ON)
+
+if (WIN32 AND ALTTABER_AUTO_DEPLOY_QT)
+    add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            $<TARGET_RUNTIME_DLLS:${PROJECT_NAME}>
+            $<TARGET_FILE_DIR:${PROJECT_NAME}>
+            COMMAND_EXPAND_LISTS
+            COMMENT "Copying runtime DLLs for $<TARGET_FILE_NAME:${PROJECT_NAME}>"
+    )
+
+    get_target_property(QT_QMAKE_EXECUTABLE Qt6::qmake IMPORTED_LOCATION)
+    if (QT_QMAKE_EXECUTABLE)
+        get_filename_component(QT_BIN_DIR "${QT_QMAKE_EXECUTABLE}" DIRECTORY)
+    endif ()
+
+    find_program(WINDEPLOYQT_EXECUTABLE
+            NAMES windeployqt windeployqt.exe
+            HINTS "${QT_BIN_DIR}"
+    )
+
+    if (WINDEPLOYQT_EXECUTABLE)
+        add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+                COMMAND "${WINDEPLOYQT_EXECUTABLE}"
+                "$<IF:$<CONFIG:Debug>,--debug,--release>"
+                --no-compiler-runtime
+                --dir "$<TARGET_FILE_DIR:${PROJECT_NAME}>"
+                --no-translations
+                --verbose 0
+                "$<TARGET_FILE:${PROJECT_NAME}>"
+                COMMENT "Deploying Qt runtime for $<TARGET_FILE_NAME:${PROJECT_NAME}>"
+                VERBATIM
+        )
+    else ()
+        message(WARNING "ALTTABER_AUTO_DEPLOY_QT is ON, but windeployqt was not found. Qt DLLs will need to be deployed manually.")
+    endif ()
 endif ()
