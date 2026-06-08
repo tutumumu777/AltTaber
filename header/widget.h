@@ -5,8 +5,10 @@
 #include <Windows.h>
 #include <QListWidget>
 #include <QDebug>
+#include "utils/ConfigManager.h"
 
 class IconOnlyDelegate; // 前向声明，避免 IconOnlyDelegate.cpp 与 widget.h 循环包含
+class GroupSwitcherWidget; // Alt+` 同应用多窗口切换浮窗
 
 struct WindowGroup;
 
@@ -39,8 +41,6 @@ Q_DECLARE_METATYPE(WindowGroup) // for QVariant
 
 enum WidgetItemRole {
     WindowGroupRole = Qt::UserRole,
-    GroupWindowHandleRole,
-    GroupWindowLabelRole,
 };
 
 QT_BEGIN_NAMESPACE
@@ -86,11 +86,8 @@ public:
 private:
     bool forceShow();
     void showLabelForItem(QListWidgetItem* item, QString text = QString());
-    void setupLabelFont();
-    void restoreDefaultListWidgetLayout();
-    void syncGroupWindowLabels(const QString& exePath);
-    QString groupWindowLabel(const QString& exePath, HWND hwnd) const;
-    void showGroupSwitcherOverlay(); // Alt+` 组内切换浮窗
+    /// 重新加载 AppSwitcherStyle 并应用到 lw / delegate / label（首次以及 cfg 编辑后调用）
+    void reloadAppStyle();
     auto getLastActiveGroupWindow(const QString& exePath) -> QPair<HWND, QDateTime>;
     auto getLastValidActiveGroupWindow(const WindowGroup& group) -> QPair<HWND, QDateTime>;
     void sortGroupWindows(QList<HWND>& windows, const QString& exePath);
@@ -101,15 +98,14 @@ private:
 private:
     Ui::Widget* ui;
     QListWidget* lw = nullptr;
-    IconOnlyDelegate* itemDelegate = nullptr; // 存储指针以便动态切换模式
+    IconOnlyDelegate* itemDelegate = nullptr;
+    GroupSwitcherWidget* groupSwitcher = nullptr; // Alt+` 浮窗（独立顶层窗口）
+    AppSwitcherStyle m_appStyle;                  // 缓存当前 Alt+Tab 样式，避免每帧 paint 查询 INI
     const QMargins ListWidgetMargin{24, 24, 24, 24};
     /// exePath -> (HWND, time)
     QHash<QString, QHash<HWND, QDateTime>> winActiveOrder;
-    QHash<QString, QHash<HWND, int>> groupWindowLabels; // exePath -> (HWND, stable index)
-    QHash<QString, int> groupWindowNextLabel; // exePath -> next stable index
     QList<HWND> groupWindowOrder;  // for Alt+` 同组窗口切换
     int groupCurrentIndex = 0;     // Alt+` 当前选中窗口索引
-    bool isGroupSwitcherMode = false; // true 表示当前浮窗是 Alt+` 组内切换模式
 };
 
 

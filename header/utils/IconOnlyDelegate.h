@@ -4,28 +4,20 @@
 #include <QStyledItemDelegate>
 #include <QPainter>
 #include <QIcon>
-#include <QColor>
+#include "ConfigManager.h"
 
-/// Icon Only Mode for QListWidget
+/// Icon Only Mode for QListWidget (Alt+Tab 横向应用切换器)
 class IconOnlyDelegate : public QStyledItemDelegate {
-    QColor selectedColor;
-    QColor hoverColor;
-    int radius;
-    bool m_groupSwitcherMode = false; // Alt+` 组内切换模式
+    AppSwitcherStyle m_style; // 默认值见 AppSwitcherStyle 内部初始化器
 
 public:
-    explicit IconOnlyDelegate(QObject* parent = nullptr,
-                              QColor selectedColor = QColor(80, 80, 80, 200),
-                              QColor hoverColor = QColor(50, 50, 50, 100),
-                              int radius = 8)
-        : QStyledItemDelegate(parent), selectedColor(selectedColor), hoverColor(hoverColor),
-          radius(radius) {}
+    explicit IconOnlyDelegate(QObject* parent = nullptr) : QStyledItemDelegate(parent) {}
 
     void paint(QPainter* painter, const QStyleOptionViewItem& option, const QModelIndex& index) const override;
 
-    /// 切换到组内切换模式：每格上方显示"窗口 N"，下方显示窗口标题
-    void setGroupSwitcherMode(bool enabled) { m_groupSwitcherMode = enabled; }
-    bool isGroupSwitcherMode() const { return m_groupSwitcherMode; }
+    /// 应用样式（首次以及配置热重载时调用）
+    void applyStyle(const AppSwitcherStyle& style) { m_style = style; }
+    const AppSwitcherStyle& style() const { return m_style; }
 };
 
 

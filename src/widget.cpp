@@ -15,6 +15,7 @@
 #include <QMetaEnum>
 #include "utils/SystemTray.h"
 #include "utils/ConfigManager.h"
+#include "GroupSwitcherWidget.h"
 #include <QSet>
 
 Widget::Widget(QWidget* parent) : QWidget(parent), ui(new Ui::Widget) {
@@ -29,17 +30,12 @@ Widget::Widget(QWidget* parent) : QWidget(parent), ui(new Ui::Widget) {
     Util::setWindowRoundCorner(this->hWnd()); // 设置窗口圆角
     setWindowBlur(hWnd()); // 设置窗口模糊, 必须配合Qt::WA_TranslucentBackground
 
-    setupLabelFont();
-
     lw->setViewMode(QListView::IconMode);
     lw->setMovement(QListView::Static);
     lw->setFlow(QListView::LeftToRight);
     lw->setWrapping(false);
     lw->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     lw->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    lw->setIconSize({64, 64});
-    lw->setGridSize({80, 80});
-    lw->setFixedHeight(lw->gridSize().height());
     lw->setUniformItemSizes(true); // optimization ?
     lw->setStyleSheet(R"(
         QListWidget {
@@ -56,18 +52,16 @@ Widget::Widget(QWidget* parent) : QWidget(parent), ui(new Ui::Widget) {
     lw->setItemDelegate(itemDelegate);
     lw->installEventFilter(this);
 
+    // 创建 Alt+` 组内切换浮窗（独立顶层窗口；不抢占焦点）
+    groupSwitcher = new GroupSwitcherWidget;
+
+    // 加载 AppSwitcherStyle（含字体/图标尺寸/网格尺寸/颜色等），并接 cfg 热重载
+    reloadAppStyle();
+    connect(&cfg, &ConfigManager::configEdited, this, &Widget::reloadAppStyle);
+
     connect(lw, &QListWidget::currentItemChanged, this, [this](QListWidgetItem* cur, QListWidgetItem*) {
         if (!cur) return;
-        if (isGroupSwitcherMode) {
-            // 组内切换模式：显示具体窗口标题
-            const auto hwndValue = cur->data(GroupWindowHandleRole).toULongLong();
-            auto hwnd = reinterpret_cast<HWND>(static_cast<quintptr>(hwndValue));
-            auto title = hwnd ? Util::getWindowTitle(hwnd) : QString();
-            if (title.isEmpty()) title = cur->data(GroupWindowLabelRole).toString();
-            showLabelForItem(cur, title);
-        } else {
-            showLabelForItem(cur);
-        }
+        showLabelForItem(cur);
     });
 
     connect(qApp, &QApplication::focusWindowChanged, this, [this](QWindow* focusWindow) {
@@ -101,27 +95,43 @@ void Widget::keyPressEvent(QKeyEvent* event) {
         auto index = (i - (2 * isShiftPressed - 1) + lw->count()) % lw->count();
         lw->setCurrentRow(index);
     } else if (key == Qt::Key_QuoteLeft && (modifiers & Qt::AltModifier)) { // Alt + `, 在前台窗口同组窗口内切换
-        // 如果当前显示的是 Alt+Tab 列表（非组内切换模式），则直接隐藏
-        if (this->isVisible() && !this->isMinimized() && !isGroupSwitcherMode) {
-            hide();
-            return;
-        }
-
         auto foreWin = GetForegroundWindow();
-        bool shiftPressed = modifiers & Qt::ShiftModifier;
+        const bool shiftPressed = modifiers & Qt::ShiftModifier;
 
-        // 首次按下：构建同组窗口列表，并定位当前窗口在列表中的索引
-        if (groupWindowOrder.isEmpty()) {
-            auto targetExe = Util::getWindowProcessPath(foreWin);
-            syncGroupWindowLabels(targetExe);
-            groupWindowOrder = buildGroupWindowOrder(targetExe);
-            groupCurrentIndex = 0;
-            for (int i = 0; i < groupWindowOrder.size(); i++) {
-                if (groupWindowOrder[i] == foreWin) {
-                    groupCurrentIndex = i;
-                    break;
+        QIcon appIcon;
+        QString appPath;
+        HWND seedWin = foreWin; // 用于定位 currentIndex 的「种子窗口」
+
+        // 模式互斥：若 Alt+Tab 列表正在显示，隐藏它并以其选中应用作为 Alt+` 的切换基准
+        if (this->isVisible() && !this->isMinimized()) {
+            if (auto item = lw->currentItem()) {
+                auto group = item->data(WindowGroupRole).value<WindowGroup>();
+                if (!group.exePath.isEmpty()) {
+                    appPath = group.exePath;
+                    appIcon = group.icon;
+                    groupWindowOrder.clear(); // 使用选中应用重新构建
+                    groupCurrentIndex = 0;
+                    seedWin = nullptr; // 不再以前台窗口作为定位种子
                 }
             }
+            hide();
+        }
+
+        // 首次按下（或刚从 Alt+Tab 切过来）：构建同组窗口列表
+        if (groupWindowOrder.isEmpty()) {
+            if (appPath.isEmpty()) appPath = Util::getWindowProcessPath(foreWin);
+            groupWindowOrder = buildGroupWindowOrder(appPath);
+            groupCurrentIndex = 0;
+            if (seedWin) {
+                for (int i = 0; i < groupWindowOrder.size(); i++) {
+                    if (groupWindowOrder[i] == seedWin) {
+                        groupCurrentIndex = i;
+                        break;
+                    }
+                }
+            }
+            if (appIcon.isNull() && !groupWindowOrder.isEmpty())
+                appIcon = Util::getCachedIcon(appPath, groupWindowOrder.first());
         }
 
         if (groupWindowOrder.size() <= 1) return; // 该应用只有一个窗口，无需切换
@@ -131,8 +141,12 @@ void Widget::keyPressEvent(QKeyEvent* event) {
         groupCurrentIndex = shiftPressed ? (groupCurrentIndex - 1 + N) % N
                                          : (groupCurrentIndex + 1) % N;
 
-        // 显示浮窗，松开 Alt 后再执行切换
-        showGroupSwitcherOverlay();
+        // 显示浮窗（首次）或仅更新选中项；松开 Alt 后再执行切换
+        if (!groupSwitcher->isVisible()) {
+            groupSwitcher->showFor(groupWindowOrder, groupCurrentIndex, appIcon, appPath);
+        } else {
+            groupSwitcher->setCurrentIndex(groupCurrentIndex);
+        }
     } else if (key == Qt::Key_Up || key == Qt::Key_Down) {
         if (auto item = lw->currentItem()) {
             auto center = lw->visualItemRect(item).center();
@@ -175,7 +189,7 @@ void Widget::showLabelForItem(QListWidgetItem* item, QString text) {
     ui->label->adjustSize();
 
     auto itemRect = lw->visualItemRect(item);
-    auto center = itemRect.center() + QPoint(0, itemRect.height() / 2 + ListWidgetMargin.bottom() / 2);
+    auto center = itemRect.center() + QPoint(0, itemRect.height() / 2 + ListWidgetMargin.bottom() / 2 + m_appStyle.labelTopGap);
     center = lw->mapTo(this, center);
     auto labelRect = ui->label->rect();
     labelRect.moveCenter(center);
@@ -187,100 +201,80 @@ void Widget::showLabelForItem(QListWidgetItem* item, QString text) {
     ui->label->move(labelRect.topLeft());
 }
 
-void Widget::setupLabelFont() {
-    static auto reloadLabelFontCfg = [this] {
-        const QStringList Fonts = {"Microsoft YaHei UI", "Microsoft YaHei", "Consolas"}; // fallback
+void Widget::reloadAppStyle() {
+    m_appStyle = cfg.loadAppStyle();
+
+    // ListWidget 图标尺寸 / 网格尺寸（gridSize = iconSize + iconPadding）
+    lw->setIconSize({m_appStyle.iconSize, m_appStyle.iconSize});
+    const int gw = m_appStyle.iconSize + m_appStyle.iconPadding.left() + m_appStyle.iconPadding.right();
+    const int gh = m_appStyle.iconSize + m_appStyle.iconPadding.top() + m_appStyle.iconPadding.bottom();
+    lw->setGridSize({gw, gh});
+    lw->setFixedHeight(gh);
+
+    // 应用到 delegate（颜色、圆角、Badge、icon padding）
+    if (itemDelegate) itemDelegate->applyStyle(m_appStyle);
+
+    // 应用到底部描述 Label：字体 + 颜色
+    {
+        const QStringList Fallbacks = {"Microsoft YaHei UI", "Microsoft YaHei", "Consolas"};
         auto labelFont = ui->label->font();
-        labelFont.setPointSize(cfg.get("label/font_size", 10).toInt());
-        auto defaultFF = QStringList{cfg.get("label/font_family", Fonts[0]).toString()};
-        labelFont.setFamilies(defaultFF << Fonts.mid(1));
+        labelFont.setPointSize(m_appStyle.labelFontSize);
+        QStringList families{m_appStyle.labelFontFamily};
+        for (const auto& f: Fallbacks)
+            if (f != m_appStyle.labelFontFamily) families << f;
+        labelFont.setFamilies(families);
         ui->label->setFont(labelFont);
-        qDebug() << labelFont.families();
+        ui->label->setStyleSheet(QString("color: %1;").arg(m_appStyle.labelColor.name(QColor::HexArgb)));
+        qDebug() << "Label families:" << labelFont.families();
         qDebug() << "Label Actual Font:" << QFontInfo(labelFont).family();
-    };
-    reloadLabelFontCfg();
-
-    // auto reload
-    connect(&cfg, &ConfigManager::configEdited, this, [] {
-        reloadLabelFontCfg();
-    });
-}
-
-void Widget::restoreDefaultListWidgetLayout() {
-    itemDelegate->setGroupSwitcherMode(false);
-    lw->setGridSize({80, 80});
-    lw->setFixedHeight(lw->gridSize().height());
-}
-
-void Widget::syncGroupWindowLabels(const QString& exePath) {
-    if (exePath.isEmpty()) return;
-
-    const auto windows = Util::listValidWindows(exePath); // 用首次扫描到的顺序固定命名，避免随活跃顺序跳动
-    auto& labelMap = groupWindowLabels[exePath];
-    auto& nextLabel = groupWindowNextLabel[exePath];
-    if (nextLabel < 1)
-        nextLabel = 1;
-
-    const QSet<HWND> activeWindows(windows.begin(), windows.end());
-    for (auto it = labelMap.begin(); it != labelMap.end();) {
-        if (activeWindows.contains(it.key()))
-            ++it;
-        else
-            it = labelMap.erase(it);
     }
 
-    for (HWND hwnd: windows) {
-        if (!labelMap.contains(hwnd))
-            labelMap.insert(hwnd, nextLabel++);
+    // 已有条目时（来自 prepareListWidget 预热），同步条目尺寸并触发重排
+    if (lw->count() > 0) {
+        for (int i = 0; i < lw->count(); i++)
+            lw->item(i)->setSizeHint(lw->gridSize());
+        // 已显示状态：重新构建并居中（rare：仅 cfg 编辑期间发生）
+        if (this->isVisible()) prepareListWidget();
     }
-}
 
-QString Widget::groupWindowLabel(const QString& exePath, HWND hwnd) const {
-    if (!hwnd) return {};
-
-    const auto labelIndex = groupWindowLabels.value(exePath).value(hwnd);
-    return labelIndex > 0 ? QString("窗口 %1").arg(labelIndex) : QString();
+    if (lw->viewport()) lw->viewport()->update();
+    update(); // 触发 paintEvent 用最新的 backgroundColor
 }
 
 void Widget::keyReleaseEvent(QKeyEvent* event) {
     if (event->key() == Qt::Key_Alt) {
-        if (this->isVisible()) {
-            if (isGroupSwitcherMode) {
-                // Alt+` 组内切换模式：直接切换到当前选中行对应的窗口
-                if (auto item = lw->currentItem()) {
-                    const auto hwndValue = item->data(GroupWindowHandleRole).toULongLong();
-                    auto hwnd = reinterpret_cast<HWND>(static_cast<quintptr>(hwndValue));
-                    if (hwnd) {
-                        Util::switchToWindow(hwnd);
-                        qInfo() << "(Alt+`)Switch to" << Util::getWindowTitle(hwnd);
+        if (groupSwitcher && groupSwitcher->isVisible()) {
+            // Alt+` 组内切换：切换到当前选中的窗口
+            // 注：groupSwitcher 不抢焦点，本进程当前无前台窗口，必须使用 force=true
+            // 跳过 Windows 的 focus-stealing prevention（对多进程 Explorer 之类的跨进程激活尤其重要）
+            if (HWND hwnd = groupSwitcher->currentHwnd()) {
+                Util::switchToWindow(hwnd, true);
+                qInfo() << "(Alt+`)Switch to" << Util::getWindowTitle(hwnd);
+            }
+            groupSwitcher->hide();
+        } else if (this->isVisible()) {
+            // Alt+Tab 模式：切换到该应用组最后活跃的窗口
+            if (auto item = lw->currentItem()) {
+                if (auto group = item->data(WindowGroupRole).value<WindowGroup>(); !group.windows.empty()) {
+                    WindowInfo targetWin = group.windows.at(0); // TODO 需要排序（lastActiveWindow 被关闭情况下）
+                    const auto lastActive = getLastActiveGroupWindow(group.exePath).first;
+                    for (auto& info: group.windows) {
+                        if (info.hwnd == lastActive) {
+                            targetWin = info;
+                            break;
+                        }
                     }
-                }
-            } else {
-                // Alt+Tab 模式：原有逻辑，切换到该应用组最后活跃的窗口
-                if (auto item = lw->currentItem()) {
-                    if (auto group = item->data(WindowGroupRole).value<WindowGroup>(); !group.windows.empty()) {
-                        WindowInfo targetWin = group.windows.at(0); // TODO 需要排序（lastActiveWindow 被关闭情况下）
-                        const auto lastActive = getLastActiveGroupWindow(group.exePath).first;
-                        for (auto& info: group.windows) {
-                            if (info.hwnd == lastActive) {
-                                targetWin = info;
-                                break;
-                            }
-                        }
-                        if (targetWin.hwnd) {
-                            Util::switchToWindow(targetWin.hwnd);
-                            qInfo() << "Switch to" << targetWin << group.exePath;
-                        }
+                    if (targetWin.hwnd) {
+                        Util::switchToWindow(targetWin.hwnd);
+                        qInfo() << "Switch to" << targetWin << group.exePath;
                     }
                 }
             }
             hide(); //! must hide after active target window, or focus may fallback to prev foreground window (like 网易云音乐)
         }
-        // 无论浮窗是否可见，都清理状态并恢复普通模式
+        // 清理 Alt+` 状态
         groupWindowOrder.clear();
         groupCurrentIndex = 0;
-        isGroupSwitcherMode = false;
-        restoreDefaultListWidgetLayout();
     }
     QWidget::keyReleaseEvent(event);
 }
@@ -289,7 +283,7 @@ void Widget::paintEvent(QPaintEvent*) { //不绘制会导致鼠标穿透背景
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing);
     painter.setPen(Qt::NoPen); //取消边框//pen决定边框颜色
-    painter.setBrush(QColor(25, 25, 25, 100));
+    painter.setBrush(m_appStyle.backgroundColor);
     painter.drawRect(rect());
 }
 
@@ -379,7 +373,10 @@ bool Widget::prepareListWidget() {
         // move to scrren center
         qDebug() << "Screen:" << screen->name();
         auto lwRect = lw->rect();
-        auto thisRect = lwRect.marginsAdded(ListWidgetMargin);
+        auto margins = ListWidgetMargin;
+        // 为底部描述 Label 预留额外间距：上间距（label 距图标）+ 下间距（label 距浮窗底）
+        margins.setBottom(margins.bottom() + m_appStyle.labelTopGap + m_appStyle.labelBottomGap);
+        auto thisRect = lwRect.marginsAdded(margins);
         thisRect.moveCenter(screen->geometry().center());
 
         //region Fixed in Qt6, see commit [b927ee4b]
@@ -429,81 +426,15 @@ bool Widget::prepareListWidget() {
     return true;
 }
 
-/// 显示 Alt+` 组内切换浮窗，列出同应用的所有窗口
-/// 每格：上方"窗口 N"，中间图标，下方窗口标题
-void Widget::showGroupSwitcherOverlay() {
-    isGroupSwitcherMode = true;
-
-    // 仅在首次显示或窗口数量变化时重建列表
-    if (!this->isVisible() || lw->count() != groupWindowOrder.size()) {
-        lw->clear();
-        if (groupWindowOrder.isEmpty()) return;
-
-        // 启用组切换模式：图标格高度增加以容纳上下文字
-        // 布局：更宽的格子 + 上下文字，避免图标过挤且标题被过早截断
-        constexpr int GroupGridW = 124;
-        constexpr int GroupGridH = 110;
-        itemDelegate->setGroupSwitcherMode(true);
-        lw->setGridSize({GroupGridW, GroupGridH});
-        lw->setFixedHeight(GroupGridH);
-
-        auto firstHwnd = groupWindowOrder.first();
-        auto appPath = Util::getWindowProcessPath(firstHwnd);
-        auto appIcon = Util::getCachedIcon(appPath, firstHwnd);
-
-        for (int i = 0; i < groupWindowOrder.size(); i++) {
-            HWND hwnd = groupWindowOrder[i];
-            auto title = Util::getWindowTitle(hwnd);
-            // 无标题时留空（delegate 不绘制空字符串）
-
-            // 每个 item 对应一个窗口，WindowGroup 仅含单个 WindowInfo
-            WindowGroup singleGroup;
-            singleGroup.exePath = appPath;
-            singleGroup.icon = appIcon;
-            singleGroup.addWindow({title, Util::getClassName(hwnd), hwnd});
-
-            auto* item = new QListWidgetItem(appIcon, {});
-            item->setData(WindowGroupRole, QVariant::fromValue(singleGroup));
-            item->setData(GroupWindowHandleRole, static_cast<qulonglong>(reinterpret_cast<quintptr>(hwnd)));
-            auto label = groupWindowLabel(appPath, hwnd);
-            if (label.isEmpty())
-                label = QString("窗口 %1").arg(i + 1);
-            item->setData(GroupWindowLabelRole, label);
-            item->setSizeHint(lw->gridSize());
-            lw->addItem(item);
-        }
-
-        // 计算并设置几何尺寸（与 prepareListWidget 逻辑保持一致）
-        if (auto firstItem = lw->item(0)) {
-            auto firstRect = lw->visualItemRect(firstItem);
-            auto width = lw->gridSize().width() * lw->count() + (firstRect.x() - lw->frameWidth());
-            lw->setFixedWidth(width);
-
-            bool displayOnPrimary = (cfg.getDisplayMonitor() == PrimaryMonitor);
-            auto screen = displayOnPrimary ?
-                          QGuiApplication::primaryScreen() :
-                          QGuiApplication::screenAt(QCursor::pos());
-            if (!screen && !displayOnPrimary)
-                screen = QGuiApplication::primaryScreen();
-            if (!screen) return;
-
-            auto lwRect = lw->rect();
-            auto thisRect = lwRect.marginsAdded(ListWidgetMargin);
-            thisRect.moveCenter(screen->geometry().center());
-            this->setGeometry(thisRect);
-
-            lwRect.moveCenter(this->rect().center());
-            lw->move(lwRect.topLeft());
-        }
-
-        forceShow();
-    }
-
-    // 更新高亮行（触发 currentItemChanged 信号以刷新底部标签文字）
-    lw->setCurrentRow(groupCurrentIndex);
-}
+/// 显示 Alt+` 组内切换浮窗（已迁移至 GroupSwitcherWidget；此处保留空注释占位）
 
 bool Widget::requestShow() { // TODO 当前台是开始菜单（Win）时，会导致显示 但无法操控
+    // 模式互斥：若 Alt+` 浮窗在显示中，先隐藏并清理状态以便切换到 Alt+Tab 模式
+    if (groupSwitcher && groupSwitcher->isVisible()) {
+        groupSwitcher->hide();
+        groupWindowOrder.clear();
+        groupCurrentIndex = 0;
+    }
     return prepareListWidget() && forceShow();
 }
 

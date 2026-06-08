@@ -74,7 +74,9 @@ add_executable(Win_Switcher src/main.cpp
         header/UpdateDialog.h
         ui/UpdateDialog.ui
         src/utils/ScheduledTask.cpp
-        header/utils/ScheduledTask.h)
+        header/utils/ScheduledTask.h
+        src/GroupSwitcherWidget.cpp
+        header/GroupSwitcherWidget.h)
 target_link_libraries(Win_Switcher
         Qt::Core
         Qt::Gui
@@ -108,6 +110,21 @@ target_compile_definitions(${PROJECT_NAME} PRIVATE
 if (MSVC)
     target_compile_options(${PROJECT_NAME} PRIVATE "/utf-8")
 endif ()
+
+# 构建后将 README.md 及其引用的 img/ 资源复制到产物目录，
+# 使发布包中的 README 能离线渲染图片（与仓库内相对路径保持一致，GitHub 页面也能正常显示）
+add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_CURRENT_SOURCE_DIR}/README.md"
+        "$<TARGET_FILE_DIR:${PROJECT_NAME}>/README.md"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different
+        "${CMAKE_CURRENT_SOURCE_DIR}/img"
+        "$<TARGET_FILE_DIR:${PROJECT_NAME}>/img"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different
+        "${CMAKE_CURRENT_SOURCE_DIR}/doc"
+        "$<TARGET_FILE_DIR:${PROJECT_NAME}>/doc"
+        COMMENT "Copying README.md, img/ and doc/ to $<TARGET_FILE_DIR:${PROJECT_NAME}>"
+)
 
 option(ALTTABER_AUTO_DEPLOY_QT "Automatically run windeployqt after building on Windows" ON)
 
